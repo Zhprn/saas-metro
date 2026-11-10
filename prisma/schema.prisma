@@ -1,0 +1,471 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-1.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  password           String?
+  name               String?
+  telephone          String?
+  picture            String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  role               UserRole            @default(USER)
+  accounts           Account[]
+  tokens             TokenBlacklist[]
+  emailVerifiedAt    DateTime?
+  emailVerifications EmailVerification[]
+  emailContacts      EmailContact[]
+  whatsAppContacts   WhatsAppContact[]
+  subscriptions      Subscription[]
+  payments           Payment[]
+  aiAgents           AiAgent[]
+
+  @@map("user")
+}
+
+model EmailVerification {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, tokenHash])
+  @@map("emailverification")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("account")
+}
+
+model TokenBlacklist {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("tokenblacklist")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+model WhatsAppSession {
+  id        String    @id @default(cuid())
+  label     String?
+  ownerId   String?
+  statePath String?
+  meJid     String? // e.g., 628xxx@s.whatsapp.net
+  connected Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  aiAgents  AiAgent[]
+
+  @@map("whatsappsession")
+}
+
+model WhatsAppContact {
+  id        String   @id @default(cuid())
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  phone     String
+  name      String?
+  waJid     String? // 62xxx@s.whatsapp.net
+  status    String   @default("UNKNOWN") // ACTIVE, INACTIVE, UNKNOWN
+  source    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([ownerId, phone])
+  @@map("whatsappcontact")
+}
+
+model WaCampaign {
+  id                String            @id @default(cuid())
+  name              String?
+  sessionId         String
+  type              String // TEXT | IMAGE
+  text              String?
+  imageUrl          String?
+  delayMs           Int               @default(1000) // jarak kirim
+  jitterMs          Int               @default(500) // +/- random
+  isScheduled       Boolean           @default(false)
+  scheduleType      String            @default("SEND_NOW") // SEND_NOW | SCHEDULE_LATER
+  timetableRepeater String? // ONCE | EVERY_DAY | EVERY_WEEK | EVERY_MONTH
+  scheduledDate     DateTime?
+  scheduledTime     String?
+  status            String            @default("PENDING") // PENDING | ACTIVE | COMPLETED | PAUSED
+  recipients        Json?
+  createdAt         DateTime          @default(now())
+  messages          WhatsAppMessage[]
+
+  @@map("wacampaign")
+}
+
+model WhatsAppMessage {
+  id           String      @id @default(cuid())
+  contactId    String?
+  phone        String
+  sessionId    String
+  campaignId   String?
+  direction    String
+  text         String?
+  mediaUrl     String?
+  status       String // SENT | FAILED
+  errorMessage String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  messageId    String?     @unique
+  type         String?
+  rawJson      Json?
+  campaign     WaCampaign? @relation(fields: [campaignId], references: [id])
+
+  @@map("whatsappmessage")
+}
+
+model GmailAccount {
+  id           String   @id @default(cuid())
+  ownerId      String
+  email        String   @unique
+  accessToken  String   @db.Text
+  refreshToken String   @db.Text
+  tokenType    String
+  expiryDate   BigInt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  messages GmailMessage[]
+
+  @@map("gmailaccount")
+}
+
+model EmailContact {
+  id        String   @id @default(cuid())
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  email     String
+  name      String?
+  status    String   @default("ACTIVE") // ACTIVE | BOUNCED | UNSUBSCRIBED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([ownerId, email])
+  @@map("emailcontact")
+}
+
+model EmailCampaign {
+  id        String         @id @default(cuid())
+  ownerId   String
+  fromEmail String
+  subject   String
+  html      String
+  delayMs   Int            @default(1000)
+  jitterMs  Int            @default(400)
+  createdAt DateTime       @default(now())
+  messages  EmailMessage[]
+
+  @@map("emailcampaign")
+}
+
+model EmailMessage {
+  id         String   @id @default(cuid())
+  campaignId String
+  contactId  String?
+  toEmail    String
+  subject    String
+  status     String // PENDING | SENT | FAILED | SKIPPED
+  error      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  campaign EmailCampaign @relation(fields: [campaignId], references: [id])
+
+  @@map("emailmessage")
+}
+
+model ClientLogo {
+  id        String   @id @default(cuid())
+  imageUrl  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("clientlogo")
+}
+
+model Package {
+  id           String        @id @default(cuid())
+  name         String        @unique
+  description  String        @db.Text
+  price        Int
+  currency     String        @default("IDR")
+  billingCycle String        @default("monthly") // 'monthly' or 'yearly'
+  packageLists PackageList[]
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@map("package")
+}
+
+model PackageList {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  packages Package[]
+
+  @@map("package_list")
+}
+
+enum TestimonialStatus {
+  PUBLISHED
+  PENDING
+  ARCHIVED
+}
+
+model Testimonial {
+  id           String            @id @default(cuid())
+  customerName String
+  businessName String
+  businessType String
+  location     String?
+  rating       Int               @default(5)
+  quote        String            @db.Text
+  avatarUrl    String?           
+  status       TestimonialStatus @default(PENDING)
+  
+  isFeatured   Boolean           @default(false) 
+  
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@map("testimonial")
+}
+
+model Subscription {
+  id        String   @id @default(cuid())
+  userId    String
+  packageId String
+  status    String   @default("ACTIVE") // ACTIVE, EXPIRED, CANCELLED
+  startDate DateTime @default(now())
+  endDate   DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  package Package @relation(fields: [packageId], references: [id])
+
+  @@map("subscription")
+}
+
+model Payment {
+  id            String    @id @default(cuid())
+  userId        String
+  packageId     String?
+  orderId       String    @unique
+  amount        Int
+  currency      String    @default("IDR")
+  status        String    @default("PENDING") // PENDING, SUCCESS, FAILED, EXPIRED
+  paymentType   String?
+  transactionId String?
+  snapToken     String?
+  snapUrl       String?
+  paidAt        DateTime?
+  metadata      String?   @db.Text
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("payment")
+}
+
+model GmailMessage {
+  id             String @id @default(cuid())
+  gmailMessageId String @unique
+  threadId       String
+
+  from    String?
+  to      String?
+  subject String?
+  snippet String?
+
+  internalDate DateTime?
+  labels       String[]
+
+  raw Json
+
+  gmailAccountId String
+  gmailAccount   GmailAccount @relation(fields: [gmailAccountId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([gmailAccountId, internalDate])
+  @@map("gmailmessage")
+}
+
+model WhatsAppConversation {
+  id              String    @id @default(cuid())
+  sessionId       String
+  jid             String // conversation identifier (remoteJid)
+  name            String? // optional display name
+  isGroup         Boolean   @default(false)
+  lastMessageId   String?
+  lastMessageText String?
+  lastMessageType String?
+  lastMessageAt   DateTime?
+  unreadCount     Int       @default(0)
+  aiMode          AiMode    @default(BOT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sessionId, jid])
+  @@index([sessionId])
+  @@index([lastMessageAt])
+  @@map("whatsappconversation")
+}
+
+model AiAgent {
+  id             String                 @id @default(cuid())
+  ownerId        String
+  sessionId      String                 @unique
+  name           String
+  isEnabled      Boolean                @default(false)
+  mode           AiMode                 @default(BOT)
+  model          String                 @default("gpt-4o-mini")
+  temperature    Float                  @default(0.7)
+  maxTokens      Int                    @default(500)
+  systemPrompt   String?                @db.Text
+  fallbackReply  String?                @db.Text
+  language       String                 @default("id")
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  owner          User                   @relation(fields: [ownerId], references: [id])
+  session        WhatsAppSession        @relation(fields: [sessionId], references: [id])
+  knowledgeFiles AiKnowledgeFile[]
+  embeddings     AiEmbedding[]
+  memories       AiConversationMemory[]
+  usageLogs      AiUsageLog[]
+
+  @@map("aiagent")
+}
+
+enum AiMode {
+  BOT
+  HUMAN
+}
+
+model AiKnowledgeFile {
+  id      String @id @default(cuid())
+  agentId String
+
+  fileName String
+  fileUrl  String
+  fileSize Int?
+  fileType KnowledgeFileType @default(FAQ)
+
+  status FileStatus @default(PROCESSING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agent AiAgent @relation(fields: [agentId], references: [id])
+
+  @@map("aiknowledgefile")
+}
+
+enum KnowledgeFileType {
+  COMPANY_PROFILE
+  PRICELIST
+  FAQ
+}
+
+enum FileStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+model AiEmbedding {
+  id      String  @id @default(cuid())
+  agentId String
+  fileId  String?
+
+  content   String            @db.Text
+  embedding Json // store vector array
+  fileType  KnowledgeFileType @default(FAQ)
+
+  createdAt DateTime @default(now())
+
+  agent AiAgent @relation(fields: [agentId], references: [id])
+
+  @@index([agentId])
+  @@index([agentId, fileType])
+  @@map("aiembedding")
+}
+
+model AiConversationMemory {
+  id        String   @id @default(cuid())
+  agentId   String
+  jid       String
+  role      String // "user" | "assistant"
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  agent     AiAgent  @relation(fields: [agentId], references: [id])
+
+  @@index([agentId, jid])
+  @@map("aiconversationmemory")
+}
+
+model AiUsageLog {
+  id               String   @id @default(cuid())
+  agentId          String
+  promptTokens     Int
+  completionTokens Int
+  totalTokens      Int
+  createdAt        DateTime @default(now())
+  agent            AiAgent  @relation(fields: [agentId], references: [id])
+
+  @@index([agentId])
+  @@map("aiusagelog")
+}
+
+model WaSession {
+  id        String   @id
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@map("wasession")
+}

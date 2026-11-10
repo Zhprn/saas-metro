@@ -1,0 +1,66 @@
+services:
+  # ─── PostgreSQL Database ────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: saas-metro-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-saas_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-saas_password}
+      POSTGRES_DB: ${POSTGRES_DB:-saas_metro}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-saas_user} -d ${POSTGRES_DB:-saas_metro}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── NestJS Application ─────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: saas-metro-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '${PORT:-3000}:3000'
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-saas_user}:${POSTGRES_PASSWORD:-saas_password}@db:5432/${POSTGRES_DB:-saas_metro}
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL}
+      GOOGLE_EMAIL_REDIRECT_URI: ${GOOGLE_EMAIL_REDIRECT_URI}
+      FRONTEND_URL: ${FRONTEND_URL}
+      APP_URL: ${APP_URL}
+      VERIFY_FROM_EMAIL: ${VERIFY_FROM_EMAIL}
+      VERIFY_TOKEN_TTL_MINUTES: ${VERIFY_TOKEN_TTL_MINUTES:-30}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET}
+      CLOUDINARY_URL: ${CLOUDINARY_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY}
+      MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY}
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY}
+      MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION:-false}
+    volumes:
+      # Persist daily logs (mounted from host so logs survive container restarts)
+      - ./logs:/app/logs
+      # Persist file uploads
+      - ./uploads:/app/uploads
+
+volumes:
+  postgres_data:
+    driver: local
