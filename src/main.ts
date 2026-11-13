@@ -8,6 +8,7 @@ import {
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptors';
 import * as dns from 'dns';
+const PORT = process.env.PORT || 3000;
 
 async function bootstrap() {
   dns.setDefaultResultOrder('ipv4first');
@@ -43,7 +44,8 @@ async function bootstrap() {
   app.useGlobalInterceptors(new TransformInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  // Also recommended: a global validation pipe
-  await app.listen(process.env.PORT ?? 3000);
+  app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on port ${PORT}`);
+});
 }
 bootstrap();
