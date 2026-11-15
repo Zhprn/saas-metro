@@ -77,6 +77,13 @@ export class WaController {
     return this.wa.getGroupMembers(sessionId, groupJid);
   }
 
+  /** Logout a specific session (works even when the session is disconnected) */
+  @Post('session/:id/logout')
+  async logoutSession(@Param('id') id: string, @User('id') ownerId: string) {
+    await this.wa.assertSessionOwner(id, ownerId);
+    return this.wa.logout(id);
+  }
+
   @Post('logout')
   async logout(@User('id') ownerId: string) {
     const sessionId = await this.wa.getSessionByOwner(ownerId);

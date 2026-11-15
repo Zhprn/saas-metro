@@ -364,6 +364,17 @@ export class WaService implements OnModuleInit {
     return session.id;
   }
 
+  /** Ensure the session exists and belongs to the given owner */
+  async assertSessionOwner(sessionId: string, ownerId: string) {
+    const session = await this.prisma.whatsAppSession.findUnique({
+      where: { id: sessionId },
+      select: { ownerId: true },
+    });
+    if (!session || session.ownerId !== ownerId) {
+      throw new NotFoundException('WhatsApp session not found.');
+    }
+  }
+
   /** List all sessions from database */
   async listSessions(ownerId: string) {
     const sessions = await this.prisma.whatsAppSession.findMany({
