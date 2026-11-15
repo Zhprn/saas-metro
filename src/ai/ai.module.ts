@@ -7,6 +7,7 @@ import { OpenAiProvider } from './providers/openai.provider';
 import { MockAiProvider } from './providers/mock-ai.provider';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { GeminiProvider } from './providers/gemini.provider';
+import { ClaudeProvider } from './providers/claude.provider';
 import { AiKnowledgeService } from './ai-knowledge.service';
 import { CloudinaryService } from 'src/common/services/cloudinary.service';
 import { WaModule } from 'src/wa/wa.module';
@@ -23,7 +24,9 @@ import { WaModule } from 'src/wa/wa.module';
     {
       provide: 'AI_PROVIDER',
       useFactory: () => {
-        if (process.env.AI_PROVIDER === 'openai') {
+        if (process.env.AI_PROVIDER === 'claude') {
+          return new ClaudeProvider();
+        } else if (process.env.AI_PROVIDER === 'openai') {
           return new OpenAiProvider();
         } else if (process.env.AI_PROVIDER === 'gemini') {
           return new GeminiProvider();
