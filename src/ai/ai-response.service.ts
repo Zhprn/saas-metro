@@ -3,14 +3,12 @@ import OpenAI from 'openai';
 
 @Injectable()
 export class AiResponseService {
-  private _openai?: OpenAI;
+  private openai: OpenAI;
 
-  // Created lazily so the app can start without OPENAI_API_KEY (e.g. AI_PROVIDER=claude)
-  private get openai(): OpenAI {
-    if (!this._openai) {
-      this._openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    }
-    return this._openai;
+  constructor() {
+    this.openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
   }
 
   async generateBasicReply(params: {
