@@ -5,8 +5,9 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { MidtransService } from './midtrans.service';
-import { CreateOrderDto, PaymentNotificationDto } from './dto/payment.dto';
+import type { FinishNotifyRequest } from 'dana-node/webhook/v1';
+import { DanaService } from './dana.service';
+import { CreateOrderDto } from './dto/payment.dto';
 
 @Injectable()
 export class PaymentService {
@@ -14,7 +15,7 @@ export class PaymentService {
 
   constructor(
     private prisma: PrismaService,
-    private midtransService: MidtransService,
+    private danaService: DanaService,
   ) {}
 
   // Get all active packages for public view
@@ -33,7 +34,6 @@ export class PaymentService {
         features: pkg.packageLists ? pkg.packageLists.map((f) => f.name) : [],
         benefits: this.getPackageBenefits(pkg.name),
       })),
-      clientKey: this.midtransService.getClientKey(),
     };
   }
 
@@ -66,9 +66,8 @@ export class PaymentService {
     return benefitsMap[packageName] || [];
   }
 
-  // Create order and get Snap token
+  // Create order and get DANA checkout URL
   async createOrder(userId: string, dto: CreateOrderDto) {
-    // Get user
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
@@ -77,7 +76,6 @@ export class PaymentService {
       throw new NotFoundException('User not found');
     }
 
-    // Get package
     const pkg = await this.prisma.package.findUnique({
       where: { id: dto.packageId },
     });
@@ -86,22 +84,24 @@ export class PaymentService {
       throw new NotFoundException('Package not found or inactive');
     }
 
-    // Check for existing pending payment to resume
+    // Resume a recent pending order (DANA checkout link expires after ~25 min)
+    const resumeAfter = new Date(Date.now() - 20 * 60 * 1000);
     const existingPayment = await this.prisma.payment.findFirst({
       where: {
         userId,
         packageId: pkg.id,
         status: 'PENDING',
+        snapUrl: { not: null },
+        createdAt: { gte: resumeAfter },
       },
       orderBy: { createdAt: 'desc' },
     });
 
-    // If there's an existing pending payment with a snap token, return it
-    if (existingPayment && existingPayment.snapToken) {
+    if (existingPayment) {
       return {
         success: true,
         orderId: existingPayment.orderId,
-        token: existingPayment.snapToken,
+        paymentId: existingPayment.id,
         redirectUrl: existingPayment.snapUrl,
         payment: {
           id: existingPayment.id,
@@ -112,10 +112,8 @@ export class PaymentService {
       };
     }
 
-    // Generate unique order ID
     const orderId = `ORDER-${Date.now()}-${Math.random().toString(36).substring(7).toUpperCase()}`;
 
-    // Create payment record (PENDING)
     const payment = await this.prisma.payment.create({
       data: {
         userId,
@@ -127,40 +125,32 @@ export class PaymentService {
       },
     });
 
+    const frontendUrl = (process.env.FRONTEND_URL ?? '').replace(/\/+$/, '');
+
     try {
-      // Create Midtrans transaction
-      const transaction = await this.midtransService.createTransaction({
+      const order = await this.danaService.createOrder({
         orderId,
         amount: pkg.price,
-        customerDetails: {
-          firstName: user.name || user.email.split('@')[0],
-          email: user.email,
-          phone: user.telephone || undefined,
-        },
-        itemDetails: [
-          {
-            id: pkg.id,
-            name: pkg.name,
-            price: pkg.price,
-            quantity: 1,
-          },
-        ],
+        title: `Paket ${pkg.name}`,
+        returnUrl: `${frontendUrl}/user/payment?orderId=${encodeURIComponent(orderId)}`,
+        goods: [{ id: pkg.id, name: pkg.name, price: pkg.price, quantity: 1 }],
       });
 
-      // Update payment with snap token
       await this.prisma.payment.update({
         where: { id: payment.id },
         data: {
-          snapToken: transaction.token,
-          snapUrl: transaction.redirect_url,
+          transactionId: order.referenceNo,
+          // snapUrl column now stores the DANA checkout URL
+          snapUrl: order.redirectUrl,
+          paymentType: 'DANA',
         },
       });
 
       return {
         success: true,
         orderId,
-        token: transaction.token,
-        redirectUrl: transaction.redirect_url,
+        paymentId: payment.id,
+        redirectUrl: order.redirectUrl,
         payment: {
           id: payment.id,
           amount: pkg.price,
@@ -169,9 +159,8 @@ export class PaymentService {
         },
       };
     } catch (error) {
-      this.logger.error('Failed to create Midtrans transaction', error);
+      this.logger.error('Failed to create DANA order', error);
 
-      // Update payment status to failed
       await this.prisma.payment.update({
         where: { id: payment.id },
         data: { status: 'FAILED' },
@@ -181,58 +170,70 @@ export class PaymentService {
     }
   }
 
-  // Handle Midtrans webhook notification
-  async handleNotification(notification: PaymentNotificationDto) {
-    const { order_id, transaction_status, payment_type, transaction_id } =
-      notification;
+  /**
+   * Handle a DANA finish notification. The signature must already be
+   * verified (see PaymentController). Returns the body DANA expects.
+   */
+  async handleDanaNotification(notify: FinishNotifyRequest) {
+    await this.applyStatus(notify.originalPartnerReferenceNo, {
+      statusCode: notify.latestTransactionStatus,
+      referenceNo: notify.originalReferenceNo,
+      paidAt: notify.additionalInfo?.paidTime ?? notify.finishedTime,
+      raw: notify,
+    });
 
-    this.logger.log(
-      `Received notification for order ${order_id}: ${transaction_status}`,
-    );
+    return { responseCode: '2005600', responseMessage: 'Successful' };
+  }
 
-    // Find payment
+  /** Update a payment from a DANA status code; activates the subscription once. */
+  private async applyStatus(
+    orderId: string,
+    info: {
+      statusCode?: string;
+      referenceNo?: string;
+      paidAt?: string;
+      raw: unknown;
+    },
+  ) {
+    this.logger.log(`DANA status for order ${orderId}: ${info.statusCode}`);
+
     const payment = await this.prisma.payment.findUnique({
-      where: { orderId: order_id },
+      where: { orderId },
     });
 
     if (!payment) {
-      this.logger.warn(`Payment not found for order ${order_id}`);
-      return { status: 'ok', message: 'Payment not found' };
+      this.logger.warn(`Payment not found for order ${orderId}`);
+      return null;
     }
 
-    let newStatus = payment.status;
+    const newStatus = DanaService.mapStatus(info.statusCode);
 
-    // Map Midtrans status to our status
-    if (
-      transaction_status === 'capture' ||
-      transaction_status === 'settlement'
-    ) {
-      newStatus = 'SUCCESS';
-    } else if (transaction_status === 'pending') {
-      newStatus = 'PENDING';
-    } else if (
-      transaction_status === 'deny' ||
-      transaction_status === 'cancel' ||
-      transaction_status === 'failure'
-    ) {
-      newStatus = 'FAILED';
-    } else if (transaction_status === 'expire') {
-      newStatus = 'EXPIRED';
+    // Ignore unknown codes, no-ops, and never downgrade a successful payment
+    if (!newStatus || newStatus === payment.status || payment.status === 'SUCCESS') {
+      return payment;
     }
 
-    // Update payment
-    await this.prisma.payment.update({
-      where: { id: payment.id },
+    // Conditional update so a webhook and a manual sync arriving together
+    // can't both create a subscription.
+    const { count } = await this.prisma.payment.updateMany({
+      where: { id: payment.id, status: payment.status },
       data: {
         status: newStatus,
-        paymentType: payment_type || payment.paymentType,
-        transactionId: transaction_id || payment.transactionId,
-        paidAt: newStatus === 'SUCCESS' ? new Date() : null,
-        metadata: JSON.stringify(notification),
+        transactionId: info.referenceNo || payment.transactionId,
+        paidAt:
+          newStatus === 'SUCCESS'
+            ? info.paidAt && !isNaN(Date.parse(info.paidAt))
+              ? new Date(info.paidAt)
+              : new Date()
+            : null,
+        metadata: JSON.stringify(info.raw),
       },
     });
 
-    // If payment successful, create subscription
+    if (count === 0) {
+      return payment;
+    }
+
     if (newStatus === 'SUCCESS' && payment.packageId) {
       const pkg = await this.prisma.package.findUnique({
         where: { id: payment.packageId },
@@ -241,7 +242,6 @@ export class PaymentService {
       if (pkg) {
         const startDate = new Date();
         const endDate = new Date();
-        // Calculate duration based on billingCycle
         const durationDays = pkg.billingCycle === 'yearly' ? 365 : 30;
         endDate.setDate(endDate.getDate() + durationDays);
 
@@ -259,7 +259,7 @@ export class PaymentService {
       }
     }
 
-    return { status: 'ok' };
+    return { ...payment, status: newStatus };
   }
 
   // Get user's payment history
@@ -307,27 +307,36 @@ export class PaymentService {
     };
   }
 
-  // Check payment status manually and sync with database
-  async checkPaymentStatus(orderId: string) {
-    try {
-      const status = await this.midtransService.getTransactionStatus(orderId);
+  // Ask DANA for the latest status and sync it to the database
+  async checkPaymentStatus(userId: string, orderId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { orderId },
+    });
 
-      // Auto-sync status to database
-      if (status.transaction_status) {
-        await this.handleNotification({
-          transaction_status: status.transaction_status,
-          order_id: orderId,
-          gross_amount: status.gross_amount,
-          payment_type: status.payment_type,
-          transaction_id: status.transaction_id,
-        });
-      }
+    if (!payment || payment.userId !== userId) {
+      throw new NotFoundException('Payment not found');
+    }
+
+    try {
+      const status = await this.danaService.queryPayment(orderId);
+
+      const updated = await this.applyStatus(orderId, {
+        statusCode: status.latestTransactionStatus,
+        referenceNo: status.originalReferenceNo,
+        paidAt: status.paidTime,
+        raw: status,
+      });
 
       return {
-        ...status,
+        success: true,
+        orderId,
+        status: updated?.status ?? payment.status,
+        latestTransactionStatus: status.latestTransactionStatus,
+        transactionStatusDesc: status.transactionStatusDesc,
         message: 'Status synced to database',
       };
     } catch (error) {
+      this.logger.error(`Failed to query DANA status for ${orderId}`, error);
       throw new BadRequestException('Failed to check payment status');
     }
   }

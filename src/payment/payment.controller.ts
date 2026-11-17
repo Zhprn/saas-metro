@@ -1,26 +1,41 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth } from '@nestjs/swagger';
-import { PaymentService } from './payment.service';
 import {
-  CreateOrderDto,
-  CreateOrderSchema,
-  PaymentNotificationDto,
-} from './dto/payment.dto';
+  Body,
+  Controller,
+  Get,
+  HttpStatus,
+  Logger,
+  Param,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+  type RawBodyRequest,
+} from '@nestjs/common';
+import { ApiBearerAuth } from '@nestjs/swagger';
+import type { Request, Response } from 'express';
+import { PaymentService } from './payment.service';
+import { DanaService } from './dana.service';
+import { CreateOrderDto, CreateOrderSchema } from './dto/payment.dto';
 import { ZodValidationPipe } from 'src/common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-guard.auth';
 import { User } from 'src/common/decorators/user.decorator';
 
 @Controller('payment')
 export class PaymentController {
-  constructor(private readonly paymentService: PaymentService) {}
+  private readonly logger = new Logger(PaymentController.name);
 
-  // Public: Get available packages with client key
+  constructor(
+    private readonly paymentService: PaymentService,
+    private readonly danaService: DanaService,
+  ) {}
+
+  // Public: Get available packages
   @Get('packages')
   async getPackages() {
     return this.paymentService.getPackages();
   }
 
-  // User: Create payment order
+  // User: Create payment order, returns DANA checkout redirectUrl
   @Post('create-order')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
@@ -31,10 +46,43 @@ export class PaymentController {
     return this.paymentService.createOrder(user.id, dto);
   }
 
-  // Webhook: Midtrans notification (no auth)
+  // Webhook: DANA finish notification (no auth, verified by X-SIGNATURE).
+  // Uses @Res so the global TransformInterceptor doesn't wrap the body:
+  // DANA expects exactly { responseCode, responseMessage }.
   @Post('notification')
-  async handleNotification(@Body() notification: PaymentNotificationDto) {
-    return this.paymentService.handleNotification(notification);
+  async handleNotification(
+    @Req() req: RawBodyRequest<Request>,
+    @Res() res: Response,
+  ) {
+    const rawBody = req.rawBody?.toString('utf8') ?? JSON.stringify(req.body);
+    const path = req.originalUrl.split('?')[0];
+
+    let notify;
+    try {
+      notify = this.danaService.parseWebhook(
+        req.method,
+        path,
+        req.headers as Record<string, string>,
+        rawBody,
+      );
+    } catch (error) {
+      this.logger.warn(`Rejected DANA webhook: ${(error as Error).message}`);
+      return res.status(HttpStatus.UNAUTHORIZED).json({
+        responseCode: '4015600',
+        responseMessage: 'Unauthorized. Invalid Signature',
+      });
+    }
+
+    try {
+      const result = await this.paymentService.handleDanaNotification(notify);
+      return res.status(HttpStatus.OK).json(result);
+    } catch (error) {
+      this.logger.error('Failed to process DANA webhook', error);
+      return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        responseCode: '5005601',
+        responseMessage: 'Internal Server Error',
+      });
+    }
   }
 
   // User: Get payment history
@@ -53,11 +101,14 @@ export class PaymentController {
     return this.paymentService.getActiveSubscription(user.id);
   }
 
-  // User: Check payment status
+  // User: Check payment status with DANA and sync to database
   @Get('status/:orderId')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  async checkPaymentStatus(@Param('orderId') orderId: string) {
-    return this.paymentService.checkPaymentStatus(orderId);
+  async checkPaymentStatus(
+    @User() user: any,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.paymentService.checkPaymentStatus(user.id, orderId);
   }
 }
