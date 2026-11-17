@@ -19,7 +19,7 @@ import { downloadContentFromMessage } from '@whiskeysockets/baileys';
 import { WaGateway } from './wa.gateway';
 import { StorageService } from 'src/common/services/storage.service';
 import { AiService } from 'src/ai/ai.service';
-import { useDbAuthState } from './baileys-db-auth';
+import { clearDbAuthState, useDbAuthState } from './baileys-db-auth';
 import { CryptoService } from 'src/common/services/crypto.service';
 
 type SessionRuntime = {
@@ -30,7 +30,20 @@ type SessionRuntime = {
   connecting: boolean;
   rejected?: boolean;
   error?: string;
+  /** Stops credential writes of this socket (used before wiping creds) */
+  disposeAuth?: () => Promise<void>;
 };
+
+/**
+ * Disconnect reasons after which the stored credentials are useless:
+ * the device was logged out from the phone, banned/forbidden, or the
+ * session data is corrupted. A fresh QR scan is required.
+ */
+const NEEDS_NEW_QR_CODES: number[] = [
+  DisconnectReason.loggedOut, // 401 – "Keluar" from the phone's Linked Devices
+  DisconnectReason.forbidden, // 403
+  DisconnectReason.badSession, // 500
+];
 
 type BroadcastTextInput = {
   name?: string;
@@ -150,6 +163,8 @@ export class WaService implements OnModuleInit {
     const runtime: SessionRuntime & {
       __resolve?: (v: { connected: boolean; qr?: string | null }) => void;
       __reject?: (e: any) => void;
+      /** true while the /connect caller is still waiting for a QR or "open" */
+      pending?: boolean;
     } = {
       ready: false,
       ownerId,
@@ -158,7 +173,11 @@ export class WaService implements OnModuleInit {
     this.sessions.set(sessionId, runtime);
 
     // Prepare auth
-    const { state, saveCreds } = await useDbAuthState(sessionId, this.prisma);
+    const { state, saveCreds, dispose } = await useDbAuthState(
+      sessionId,
+      this.prisma,
+    );
+    runtime.disposeAuth = dispose;
     const { version } = await fetchLatestBaileysVersion();
 
     // Create socket
@@ -230,9 +249,17 @@ export class WaService implements OnModuleInit {
             runtime.ready = false;
             runtime.rejected = true;
             runtime.error = `WhatsApp number (${actualPhone}) does not match your registered telephone number (${expectedPhone}). Please logout and use the correct number.`;
+            // Unlink the wrong device and wipe its creds, otherwise every next
+            // connect silently logs in to the wrong number again and never shows a QR.
+            await dispose();
+            await clearDbAuthState(sessionId, this.prisma);
             try {
-              sock.end(new Error('Telephone mismatch'));
-            } catch {}
+              await sock.logout('Telephone mismatch');
+            } catch {
+              try {
+                sock.end(new Error('Telephone mismatch'));
+              } catch {}
+            }
 
             // Reject the awaiting Promise directly
             runtime.__reject?.(new BadRequestException(runtime.error));
@@ -294,14 +321,46 @@ export class WaService implements OnModuleInit {
           );
         }
 
-        this.sessions.delete(sessionId);
-
-        // reconnect only if not logged out and not rejected due to telephone mismatch
-        if (code !== DisconnectReason.loggedOut && !runtime.rejected) {
-          setTimeout(() => {
-            this.connect(sessionId, ownerId, label).catch(() => {});
-          }, 3000);
+        // Only drop the runtime if it is still ours (a newer connect may have replaced it)
+        if (this.sessions.get(sessionId) === runtime) {
+          this.sessions.delete(sessionId);
         }
+
+        if (runtime.rejected) return; // telephone mismatch, handled above
+
+        // Logged out from the phone / bad session: the stored creds are dead.
+        // Wipe them so the next connect produces a fresh QR instead of failing forever.
+        if (NEEDS_NEW_QR_CODES.includes(code)) {
+          this.logger.warn(
+            `Session ${sessionId} was logged out (${code}); clearing credentials, new QR scan required`,
+          );
+          await dispose();
+          await clearDbAuthState(sessionId, this.prisma);
+
+          // The user is currently waiting on /connect (e.g. clicked "Connect" after
+          // logging out on the phone): start over right away and hand them the new QR.
+          if (runtime.pending) {
+            this.connect(sessionId, ownerId, label).then(
+              (r) => runtime.__resolve?.({ connected: r.connected, qr: r.qr }),
+              (e) => runtime.__reject?.(e),
+            );
+          }
+          return;
+        }
+
+        // Another instance (e.g. a second server with the same DB) took over this
+        // session. Reconnecting would make both servers kick each other forever.
+        if (code === DisconnectReason.connectionReplaced) {
+          this.logger.warn(
+            `Session ${sessionId} was opened somewhere else (440); not auto-reconnecting`,
+          );
+          return;
+        }
+
+        // Transient drop (network, restartRequired after QR scan, timeout…): reconnect
+        setTimeout(() => {
+          this.connect(sessionId, ownerId, label).catch(() => {});
+        }, 3000);
       }
     });
 
@@ -310,39 +369,40 @@ export class WaService implements OnModuleInit {
       connected: boolean;
       qr?: string | null;
     }>((resolve, reject) => {
-      // Store callbacks so the async connection.update handler can settle this promise
-      runtime.__resolve = (v) => {
-        if (!done) {
-          done = true;
-          clearTimeout(timeout);
-          resolve(v);
-        }
-      };
-      runtime.__reject = (e) => {
-        if (!done) {
-          done = true;
-          clearTimeout(timeout);
-          reject(e);
-        }
-      };
-
       let done = false;
+      runtime.pending = true;
 
-      const timeout = setTimeout(() => {
-        if (!done) {
-          done = true;
-          resolve({ connected: runtime.ready, qr: runtime.qr ?? null });
-        }
-      }, 20000);
-
-      // QR events are still handled here (they do not need async DB work)
-      sock.ev.on('connection.update', (u) => {
+      const settle = (fn: () => void) => {
         if (done) return;
-        if (u.qr) {
-          clearTimeout(timeout);
-          done = true;
-          resolve({ connected: false, qr: runtime.qr ?? null });
-        }
+        done = true;
+        runtime.pending = false;
+        clearTimeout(timeout);
+        fn();
+      };
+
+      // Store callbacks so the async connection.update handler can settle this promise
+      runtime.__resolve = (v) => settle(() => resolve(v));
+      runtime.__reject = (e) => settle(() => reject(e));
+
+      // A logged-out session restarts itself (see close handler) and needs more time
+      const timeout = setTimeout(() => {
+        settle(() =>
+          resolve({ connected: runtime.ready, qr: runtime.qr ?? null }),
+        );
+      }, 30000);
+
+      // QR events are still handled here (they do not need async DB work).
+      // The QR data URL is produced asynchronously in the first listener, so wait for it.
+      sock.ev.on('connection.update', (u) => {
+        if (done || !u.qr) return;
+        const waitForQr = (tries = 0) => {
+          if (runtime.qr || tries > 20) {
+            settle(() => resolve({ connected: false, qr: runtime.qr ?? null }));
+          } else {
+            setTimeout(() => waitForQr(tries + 1), 50);
+          }
+        };
+        waitForQr();
         // 'open' is handled asynchronously in the other listener above
       });
     });
@@ -351,14 +411,21 @@ export class WaService implements OnModuleInit {
   }
 
   /** Resolve the active WhatsApp session ID for a given owner */
+  /**
+   * Prefers a connected session, but falls back to the owner's latest session so
+   * features that don't need a live socket (AI agent, knowledge, history) keep
+   * working while WhatsApp is temporarily disconnected. Features that DO need a
+   * live socket go through ensureConnected(), which throws a clear error.
+   */
   async getSessionByOwner(ownerId: string): Promise<string> {
     const session = await this.prisma.whatsAppSession.findFirst({
-      where: { ownerId, connected: true },
+      where: { ownerId },
+      orderBy: [{ connected: 'desc' }, { updatedAt: 'desc' }],
       select: { id: true },
     });
     if (!session) {
       throw new NotFoundException(
-        'No active WhatsApp session found. Please connect first.',
+        'Belum ada session WhatsApp. Silakan hubungkan WhatsApp terlebih dahulu.',
       );
     }
     return session.id;
@@ -606,6 +673,10 @@ export class WaService implements OnModuleInit {
   /** Logout */
   async logout(sessionId: string) {
     const rt = this.sessions.get(sessionId);
+
+    // mark as intentional so the close handler doesn't try to reconnect
+    if (rt) rt.rejected = true;
+    await rt?.disposeAuth?.();
 
     try {
       if (rt?.sock) {

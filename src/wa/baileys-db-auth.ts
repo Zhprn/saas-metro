@@ -12,6 +12,7 @@ export const useDbAuthState = async (
 ): Promise<{
   state: AuthenticationState;
   saveCreds: () => Promise<void>;
+  dispose: () => Promise<void>;
 }> => {
   const existing = await prisma.waSession.findUnique({
     where: { id: sessionId },
@@ -47,31 +48,78 @@ export const useDbAuthState = async (
       },
       set: async (data) => {
         for (const type in data) {
-          keys[type] = {
-            ...(keys[type] || {}),
-            ...data[type],
-          };
+          const current = { ...(keys[type] || {}) };
+          for (const id in data[type]) {
+            const value = data[type][id];
+            // Baileys passes null to delete a key (e.g. consumed pre-keys)
+            if (value === null || value === undefined) delete current[id];
+            else current[id] = value;
+          }
+          keys[type] = current;
         }
+        // Signal keys (sessions, pre-keys, sender keys) MUST be persisted too,
+        // otherwise they are lost on restart and the session breaks (Bad MAC / no decrypt).
+        scheduleSave();
       },
     },
   };
 
-  const saveCreds = async () => {
+  let disposed = false;
+
+  const writeToDb = async () => {
+    if (disposed) return;
+    const data = JSON.parse(
+      JSON.stringify({ creds: state.creds, keys }, BufferJSON.replacer),
+    );
     await prisma.waSession.upsert({
       where: { id: sessionId },
-      update: {
-        data: JSON.parse(
-          JSON.stringify({ creds: state.creds, keys }, BufferJSON.replacer),
-        ),
-      },
-      create: {
-        id: sessionId,
-        data: JSON.parse(
-          JSON.stringify({ creds: state.creds, keys }, BufferJSON.replacer),
-        ),
-      },
+      update: { data },
+      create: { id: sessionId, data },
     });
   };
 
-  return { state, saveCreds };
+  // Serialise writes so an older snapshot never overwrites a newer one,
+  // and debounce bursts of key updates into a single write.
+  let saving: Promise<void> = Promise.resolve();
+  let timer: NodeJS.Timeout | null = null;
+
+  const saveCreds = async () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    saving = saving.then(writeToDb, writeToDb).catch((err) => {
+      console.error(`[WA auth] Failed to save creds for ${sessionId}:`, err);
+    });
+    return saving;
+  };
+
+  const scheduleSave = () => {
+    if (disposed) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      void saveCreds();
+    }, 500);
+  };
+
+  /** Stop all future writes (call before deleting the stored credentials). */
+  const dispose = async () => {
+    disposed = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    await saving;
+  };
+
+  return { state, saveCreds, dispose };
+};
+
+/** Remove stored credentials so the next connect starts fresh with a new QR. */
+export const clearDbAuthState = async (
+  sessionId: string,
+  prisma: PrismaService,
+) => {
+  await prisma.waSession.deleteMany({ where: { id: sessionId } });
 };
