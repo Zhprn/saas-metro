@@ -6,11 +6,11 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes } from '@nestjs/swagger';
-import { CloudinaryService } from 'src/common/services/cloudinary.service';
+import { StorageService } from 'src/common/services/storage.service';
 
 @Controller('media')
 export class MediaController {
-  constructor(private cloudinary: CloudinaryService) {}
+  constructor(private storage: StorageService) {}
 
   @Post('upload')
   @ApiConsumes('multipart/form-data')
@@ -27,14 +27,14 @@ export class MediaController {
   })
   @UseInterceptors(FileInterceptor('file'))
   async upload(@UploadedFile() file: Express.Multer.File) {
-    const result: any = await this.cloudinary.uploadBuffer(
-      file.buffer,
-      'whatsapp-image',
-    );
+    const result = await this.storage.upload(file.buffer, 'whatsapp-image', {
+      fileName: file.originalname,
+      contentType: file.mimetype,
+    });
 
     return {
-      uri: result.secure_url,
-      publicId: result.public_id,
+      uri: result.url,
+      publicId: result.path,
     };
   }
 }

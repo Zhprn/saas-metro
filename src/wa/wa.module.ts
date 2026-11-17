@@ -3,7 +3,7 @@ import { WaController } from './wa.controller';
 import { WaService } from './wa.service';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { WaGateway } from './wa.gateway';
-import { CloudinaryService } from 'src/common/services/cloudinary.service';
+import { StorageService } from 'src/common/services/storage.service';
 import { AiModule } from 'src/ai/ai.module';
 import { CryptoService } from 'src/common/services/crypto.service';
 import { WaScheduler } from './wa.scheduler';
@@ -13,7 +13,7 @@ import { WaScheduler } from './wa.scheduler';
   providers: [
     WaService,
     WaGateway,
-    CloudinaryService,
+    StorageService,
     CryptoService,
     WaScheduler,
   ],

@@ -14,7 +14,7 @@ import { AiService } from './ai.service';
 import { AiAgentService } from './ai-agent.service';
 import { ApiBearerAuth, ApiBody, ApiConsumes } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { CloudinaryService } from 'src/common/services/cloudinary.service';
+import { StorageService } from 'src/common/services/storage.service';
 import { AiKnowledgeService } from './ai-knowledge.service';
 import { KnowledgeFileType } from '@prisma/client';
 import { WaService } from 'src/wa/wa.service';
@@ -28,7 +28,7 @@ export class AiController {
   constructor(
     private readonly aiService: AiService,
     private readonly aiAgentService: AiAgentService,
-    private readonly cloudinaryService: CloudinaryService,
+    private readonly storageService: StorageService,
     private readonly aiKnowledgeService: AiKnowledgeService,
     private readonly waService: WaService,
   ) {}
@@ -129,16 +129,17 @@ export class AiController {
       return { success: false, message: 'Pdf file max size is 5MB' };
     }
     // 1. upload first (fast)
-    const uploaded = await this.cloudinaryService.uploadPdf(
+    const uploaded = await this.storageService.upload(
       file.buffer,
-      `${Date.now()}-${file.originalname}`,
+      'ai-knowledge',
+      { fileName: file.originalname, contentType: 'application/pdf' },
     );
 
     // 2. save DB
     const fileRecord = await this.aiService.uploadKnowledge(
       agentId,
       file.originalname,
-      uploaded.secure_url,
+      uploaded.url,
       'PROCESSING',
       fileType,
     );

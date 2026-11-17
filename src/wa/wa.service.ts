@@ -17,7 +17,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import axios from 'axios';
 import { downloadContentFromMessage } from '@whiskeysockets/baileys';
 import { WaGateway } from './wa.gateway';
-import { CloudinaryService } from 'src/common/services/cloudinary.service';
+import { StorageService } from 'src/common/services/storage.service';
 import { AiService } from 'src/ai/ai.service';
 import { useDbAuthState } from './baileys-db-auth';
 import { CryptoService } from 'src/common/services/crypto.service';
@@ -93,7 +93,7 @@ export class WaService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private gateway: WaGateway,
-    private cloudinary: CloudinaryService,
+    private storage: StorageService,
     private aiService: AiService,
     private crypto: CryptoService,
   ) {}
@@ -1497,12 +1497,11 @@ export class WaService implements OnModuleInit {
 
       const buffer = Buffer.concat(chunks);
 
-      const uploadResult: any = await this.cloudinary.uploadBuffer(
-        buffer,
-        'whatsapp-image',
-      );
+      const uploadResult = await this.storage.upload(buffer, 'whatsapp-image', {
+        contentType: messageContent.imageMessage.mimetype || 'image/jpeg',
+      });
 
-      mediaUrl = uploadResult.secure_url;
+      mediaUrl = uploadResult.url;
     }
 
     const text =

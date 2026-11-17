@@ -8,7 +8,7 @@ import { MockAiProvider } from './providers/mock-ai.provider';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { GeminiProvider } from './providers/gemini.provider';
 import { AiKnowledgeService } from './ai-knowledge.service';
-import { CloudinaryService } from 'src/common/services/cloudinary.service';
+import { StorageService } from 'src/common/services/storage.service';
 import { WaModule } from 'src/wa/wa.module';
 
 @Module({
@@ -19,7 +19,7 @@ import { WaModule } from 'src/wa/wa.module';
     AiResponseService,
     AiAgentService,
     AiKnowledgeService,
-    CloudinaryService,
+    StorageService,
     {
       provide: 'AI_PROVIDER',
       useFactory: () => {

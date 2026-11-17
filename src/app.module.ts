@@ -16,7 +16,7 @@ import { ContactsModule } from './contacts/contacts.module';
 import { AdminModule } from './admin/admin.module';
 import { PaymentModule } from './payment/payment.module';
 import { AiModule } from './ai/ai.module';
-import { CloudinaryService } from './common/services/cloudinary.service';
+import { StorageService } from './common/services/storage.service';
 import { MediaController } from './media/media.controller';
 
 @Module({
@@ -46,7 +46,7 @@ import { MediaController } from './media/media.controller';
     AiModule,
   ],
   controllers: [AppController, MediaController],
-  providers: [AppService, WinstonLoggerService, CloudinaryService],
+  providers: [AppService, WinstonLoggerService, StorageService],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
