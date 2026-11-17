@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -121,12 +122,30 @@ export class AiController {
     @Body('fileType') fileTypeRaw?: string,
   ) {
     // Default to FAQ if not provided or unrecognised
-    const fileType: KnowledgeFileType =
-      (fileTypeRaw as KnowledgeFileType) ?? KnowledgeFileType.FAQ;
+    const fileType: KnowledgeFileType = Object.values(
+      KnowledgeFileType,
+    ).includes(fileTypeRaw as KnowledgeFileType)
+      ? (fileTypeRaw as KnowledgeFileType)
+      : KnowledgeFileType.FAQ;
 
-    const fileName = file.originalname;
-    if (!file || file.size > 5 * 1024 * 1024) {
-      return { success: false, message: 'Pdf file max size is 5MB' };
+    if (!file) {
+      throw new BadRequestException('File wajib diupload');
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      throw new BadRequestException('Ukuran file PDF maksimal 5MB');
+    }
+    // Only real PDFs can be processed: check name/mimetype AND the "%PDF-" header,
+    // so a renamed image or Word file is rejected here instead of failing later.
+    const looksLikePdf =
+      file.mimetype === 'application/pdf' ||
+      file.originalname.toLowerCase().endsWith('.pdf');
+    const hasPdfHeader =
+      file.buffer?.subarray(0, 1024).toString('latin1').includes('%PDF-') ??
+      false;
+    if (!looksLikePdf || !hasPdfHeader) {
+      throw new BadRequestException(
+        'Hanya file PDF yang didukung. Silakan konversi file ke PDF terlebih dahulu.',
+      );
     }
     // 1. upload first (fast)
     const uploaded = await this.storageService.upload(
@@ -145,13 +164,17 @@ export class AiController {
     );
 
     // 3. process in background
+    // NOTE: the .catch is required. Without it a broken PDF rejects with no handler,
+    // Node kills the whole process and Render answers 502 for every request.
     setImmediate(() => {
-      this.aiKnowledgeService.processPdfBuffer(
-        agentId,
-        fileRecord.id,
-        file.buffer,
-        fileType,
-      );
+      this.aiKnowledgeService
+        .processPdfBuffer(agentId, fileRecord.id, file.buffer, fileType)
+        .catch((err) =>
+          console.error(
+            `[AI Knowledge] Failed to process file ${fileRecord.id}:`,
+            err?.message ?? err,
+          ),
+        );
     });
 
     return { success: true, fileType };

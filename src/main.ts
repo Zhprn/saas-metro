@@ -10,6 +10,16 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import * as dns from 'dns';
 const PORT = process.env.PORT || 3000;
 
+// A stray rejected promise (e.g. inside a WhatsApp socket event handler) must not
+// kill the whole server: Node exits on unhandled rejections by default, and on
+// Render that shows up as 502 until the service restarts.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
+
 async function bootstrap() {
   dns.setDefaultResultOrder('ipv4first');
   const app = await NestFactory.create(AppModule);

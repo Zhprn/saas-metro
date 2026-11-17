@@ -110,22 +110,35 @@ export class WaService implements OnModuleInit {
     private aiService: AiService,
     private crypto: CryptoService,
   ) {}
-  async onModuleInit() {
+  onModuleInit() {
+    // Run in the background: Nest waits for onModuleInit before app.listen(),
+    // and each connect() can take up to 30s. Awaiting here kept the HTTP port
+    // closed during boot, which Render reports as 502 / failed deploy.
+    void this.autoReconnectSessions();
+  }
+
+  private async autoReconnectSessions() {
     this.logger.log('Auto-reconnecting WhatsApp sessions...');
-    const sessions = await this.prisma.whatsAppSession.findMany({
-      where: { connected: true },
-    });
-    for (const s of sessions) {
-      if (!s.ownerId) {
-        this.logger.warn(`Skipping session ${s.id} because ownerId is null`);
-        continue;
+    try {
+      const sessions = await this.prisma.whatsAppSession.findMany({
+        where: { connected: true },
+      });
+      for (const s of sessions) {
+        if (!s.ownerId) {
+          this.logger.warn(`Skipping session ${s.id} because ownerId is null`);
+          continue;
+        }
+        try {
+          await this.connect(s.id, s.ownerId, s.label ?? undefined);
+          this.logger.log(`Auto-reconnected session ${s.id}`);
+        } catch (err: any) {
+          this.logger.error(
+            `Failed to auto-reconnect ${s.id}: ${err.message}`,
+          );
+        }
       }
-      try {
-        await this.connect(s.id, s.ownerId, s.label ?? undefined);
-        this.logger.log(`Auto-reconnected session ${s.id}`);
-      } catch (err: any) {
-        this.logger.error(`Failed to auto-reconnect ${s.id}: ${err.message}`);
-      }
+    } catch (err: any) {
+      this.logger.error(`Auto-reconnect failed: ${err.message}`);
     }
   }
   /** Create/(re)connect a session; returns QR (if needed) */
