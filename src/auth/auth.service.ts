@@ -3,12 +3,13 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
+import * as nodemailer from 'nodemailer';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { GoogleEmailService } from 'src/email/google.service';
 import { verifyEmailHtml } from './templates/verify-email';
 import { LoginDto } from './dto/login.dto';
 
@@ -27,12 +28,29 @@ export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
-    private gmail: GoogleEmailService,
   ) {}
 
   // -------------------- TOKEN SIGNING --------------------
   signToken(userId: string, role: 'ADMIN' | 'USER') {
     return this.jwtService.sign({ sub: userId, role });
+  }
+
+  // -------------------- SMTP TRANSPORT --------------------
+  private smtpTransport?: nodemailer.Transporter;
+
+  private getSmtpTransport() {
+    if (!this.smtpTransport) {
+      this.smtpTransport = nodemailer.createTransport({
+        host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
+        port: Number(process.env.SMTP_PORT ?? 465),
+        secure: Number(process.env.SMTP_PORT ?? 465) === 465,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+    }
+    return this.smtpTransport;
   }
 
   // -------------------- SEND VERIFICATION --------------------
@@ -65,26 +83,22 @@ export class AuthService {
 
     const verifyUrl = `${process.env.APP_URL}/auth/verify-email?token=${encodeURIComponent(token)}`;
     const from = process.env.VERIFY_FROM_EMAIL!;
-    const client = await this.gmail.getAuthorizedClient(from);
-
     const html = verifyEmailHtml(user.name, verifyUrl);
-    const raw = Buffer.from(
-      [
-        `From: ${from}`,
-        `To: ${user.email}`,
-        `Subject: Verify your email`,
-        'MIME-Version: 1.0',
-        'Content-Type: text/html; charset=UTF-8',
-        '',
-        html,
-      ].join('\n'),
-    )
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
 
-    await client.users.messages.send({ userId: 'me', requestBody: { raw } });
+    // System emails go over SMTP (Gmail App Password). This is intentionally
+    // separate from the customer "Connect Gmail" feature (gmailAccount table).
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      throw new InternalServerErrorException(
+        'System email is not configured (SMTP_USER / SMTP_PASS missing).',
+      );
+    }
+
+    await this.getSmtpTransport().sendMail({
+      from,
+      to: user.email,
+      subject: 'Verify your email',
+      html,
+    });
   }
 
   // -------------------- REGISTER --------------------
