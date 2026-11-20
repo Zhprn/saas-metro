@@ -1,3 +1,4 @@
+import { SubscriptionGuard } from 'src/common/guards/subscription.guard';
 import {
   Controller,
   Get,
@@ -34,7 +35,7 @@ export class EmailController {
 
   /** 1) Start Google connect – redirects to Google */
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SubscriptionGuard)
   @Get('google/connect')
   startConnect(@Req() req: Request, @Res() res: Response) {
     // attach your app user id to state so you know who connected
@@ -43,7 +44,7 @@ export class EmailController {
     return res.redirect(url);
   }
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SubscriptionGuard)
   @Get('google/connect-url')
   getConnectUrl(@Req() req) {
     const ownerId = req.user?.sub ?? req.user?.id ?? req.user?.userId;
@@ -71,7 +72,7 @@ export class EmailController {
 
   /** Get list of connected Gmail accounts */
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SubscriptionGuard)
   @Get('accounts')
   async getAccounts(@Req() req) {
     const ownerId = req.user?.sub ?? req.user?.id ?? req.user?.userId;
@@ -82,7 +83,7 @@ export class EmailController {
 
   /** 3) Send a single test email */
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SubscriptionGuard)
   @Post('send-test')
   async sendTest(
     @Body(new ZodValidationPipe(SendTestSchema)) dto: SendTestDto,
@@ -98,7 +99,7 @@ export class EmailController {
 
   /** 4) Broadcast */
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SubscriptionGuard)
   @Post('broadcast')
   async broadcast(
     @Req() req,
@@ -117,7 +118,7 @@ export class EmailController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SubscriptionGuard)
   @Get('inbox')
   async inbox(
     @Req() req,

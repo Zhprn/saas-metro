@@ -1,3 +1,4 @@
+import { hasActiveSubscription } from 'src/common/guards/subscription.guard';
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
@@ -1521,6 +1522,14 @@ export class WaService implements OnModuleInit {
     return Buffer.from(r.data as any);
   }
 
+  async sessionOwnerHasSubscription(sessionId: string): Promise<boolean> {
+    const session = await this.prisma.whatsAppSession.findUnique({
+      where: { id: sessionId },
+      select: { ownerId: true },
+    });
+    return hasActiveSubscription(this.prisma, session?.ownerId);
+  }
+
   private registerMessageListener(
     sock: ReturnType<typeof makeWASocket>,
     sessionId: string,
@@ -1621,8 +1630,13 @@ export class WaService implements OnModuleInit {
       fromMe,
     });
 
-    // AI AUTO REPLY
-    if (!fromMe && !isGroup && text) {
+    // AI AUTO REPLY (only while the session owner has an active package)
+    if (
+      !fromMe &&
+      !isGroup &&
+      text &&
+      (await this.sessionOwnerHasSubscription(sessionId))
+    ) {
       const aiReply = await this.aiService.handleIncomingMessage({
         sessionId,
         jid: remoteJid,

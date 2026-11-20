@@ -1,3 +1,4 @@
+import { SubscriptionGuard } from 'src/common/guards/subscription.guard';
 import {
   BadRequestException,
   Body,
@@ -32,7 +33,7 @@ import {
 } from './dto';
 import { ZodValidationPipe } from 'src/common/pipes/zod-validation.pipe';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, SubscriptionGuard)
 @ApiBearerAuth()
 @Controller('contacts')
 export class ContactsController {

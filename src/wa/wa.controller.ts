@@ -1,3 +1,4 @@
+import { SubscriptionGuard } from 'src/common/guards/subscription.guard';
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth } from '@nestjs/swagger';
 import { WaService } from './wa.service';
@@ -22,7 +23,7 @@ import {
 } from './dto/group.dto';
 import { User } from 'src/common/decorators/user.decorator';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, SubscriptionGuard)
 @ApiBearerAuth()
 @Controller('wa')
 export class WaController {

@@ -32,7 +32,10 @@ export class WaScheduler {
 
     for (const campaign of campaigns) {
       try {
-        if (this.shouldRunCampaign(campaign, now, currentHourMin)) {
+        if (
+          this.shouldRunCampaign(campaign, now, currentHourMin) &&
+          (await this.waService.sessionOwnerHasSubscription(campaign.sessionId))
+        ) {
           this.logger.log(`Executing scheduled campaign ${campaign.id}`);
 
           await this.executeCampaign(campaign);

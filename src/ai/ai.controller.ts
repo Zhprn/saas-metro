@@ -1,3 +1,4 @@
+import { SubscriptionGuard } from 'src/common/guards/subscription.guard';
 import {
   BadRequestException,
   Body,
@@ -22,7 +23,7 @@ import { WaService } from 'src/wa/wa.service';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-guard.auth';
 import { User } from 'src/common/decorators/user.decorator';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, SubscriptionGuard)
 @ApiBearerAuth()
 @Controller('ai')
 export class AiController {
