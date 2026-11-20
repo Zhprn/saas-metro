@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
-import * as nodemailer from 'nodemailer';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { verifyEmailHtml } from './templates/verify-email';
@@ -33,24 +32,6 @@ export class AuthService {
   // -------------------- TOKEN SIGNING --------------------
   signToken(userId: string, role: 'ADMIN' | 'USER') {
     return this.jwtService.sign({ sub: userId, role });
-  }
-
-  // -------------------- SMTP TRANSPORT --------------------
-  private smtpTransport?: nodemailer.Transporter;
-
-  private getSmtpTransport() {
-    if (!this.smtpTransport) {
-      this.smtpTransport = nodemailer.createTransport({
-        host: process.env.SMTP_HOST ?? 'smtp.gmail.com',
-        port: Number(process.env.SMTP_PORT ?? 465),
-        secure: Number(process.env.SMTP_PORT ?? 465) === 465,
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-        },
-      });
-    }
-    return this.smtpTransport;
   }
 
   // -------------------- SEND VERIFICATION --------------------
@@ -85,20 +66,32 @@ export class AuthService {
     const from = process.env.VERIFY_FROM_EMAIL!;
     const html = verifyEmailHtml(user.name, verifyUrl);
 
-    // System emails go over SMTP (Gmail App Password). This is intentionally
-    // separate from the customer "Connect Gmail" feature (gmailAccount table).
-    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    // System emails go through Resend's HTTPS API (Render blocks SMTP ports).
+    // Intentionally separate from the customer "Connect Gmail" feature.
+    if (!process.env.RESEND_API_KEY) {
       throw new InternalServerErrorException(
-        'System email is not configured (SMTP_USER / SMTP_PASS missing).',
+        'System email is not configured (RESEND_API_KEY missing).',
       );
     }
 
-    await this.getSmtpTransport().sendMail({
-      from,
-      to: user.email,
-      subject: 'Verify your email',
-      html,
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: user.email,
+        subject: 'Verify your email',
+        html,
+      }),
     });
+    if (!res.ok) {
+      throw new InternalServerErrorException(
+        `Failed to send verification email: ${res.status} ${await res.text()}`,
+      );
+    }
   }
 
   // -------------------- REGISTER --------------------
