@@ -42,7 +42,6 @@
     "@supabase/supabase-js": "^2.119.0",
     "@whiskeysockets/baileys": "^6.7.20",
     "bcryptjs": "^3.0.2",
-    "dana-node": "^2.2.2",
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "exceljs": "^4.4.0",

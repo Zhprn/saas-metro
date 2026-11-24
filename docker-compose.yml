@@ -52,13 +52,9 @@ services:
       AI_PROVIDER: ${AI_PROVIDER:-gemini}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY}
-      DANA_ENV: ${DANA_ENV:-sandbox}
-      X_PARTNER_ID: ${X_PARTNER_ID}
-      DANA_MERCHANT_ID: ${DANA_MERCHANT_ID}
-      PRIVATE_KEY: ${PRIVATE_KEY}
-      DANA_PUBLIC_KEY: ${DANA_PUBLIC_KEY}
-      ORIGIN: ${ORIGIN}
-      DANA_MCC: ${DANA_MCC:-5732}
+      DOKU_ENV: ${DOKU_ENV:-sandbox}
+      DOKU_CLIENT_ID: ${DOKU_CLIENT_ID}
+      DOKU_SECRET_KEY: ${DOKU_SECRET_KEY}
     volumes:
       # Persist daily logs (mounted from host so logs survive container restarts)
       - ./logs:/app/logs

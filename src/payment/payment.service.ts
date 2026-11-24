@@ -5,8 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import type { FinishNotifyRequest } from 'dana-node/webhook/v1';
-import { DanaService } from './dana.service';
+import { DokuService, type DokuTransaction } from './doku.service';
 import { CreateOrderDto } from './dto/payment.dto';
 
 @Injectable()
@@ -15,7 +14,7 @@ export class PaymentService {
 
   constructor(
     private prisma: PrismaService,
-    private danaService: DanaService,
+    private dokuService: DokuService,
   ) {}
 
   // Get all active packages for public view
@@ -66,7 +65,7 @@ export class PaymentService {
     return benefitsMap[packageName] || [];
   }
 
-  // Create order and get DANA checkout URL
+  // Create order and get DOKU checkout URL
   async createOrder(userId: string, dto: CreateOrderDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -84,13 +83,14 @@ export class PaymentService {
       throw new NotFoundException('Package not found or inactive');
     }
 
-    // Resume a recent pending order (DANA checkout link expires after ~25 min)
+    // Resume a recent pending order (DOKU checkout link expires after 25 min)
     const resumeAfter = new Date(Date.now() - 20 * 60 * 1000);
     const existingPayment = await this.prisma.payment.findFirst({
       where: {
         userId,
         packageId: pkg.id,
         status: 'PENDING',
+        paymentType: 'QRIS', // skip links from the previous gateway (DANA)
         snapUrl: { not: null },
         createdAt: { gte: resumeAfter },
       },
@@ -128,21 +128,19 @@ export class PaymentService {
     const frontendUrl = (process.env.FRONTEND_URL ?? '').replace(/\/+$/, '');
 
     try {
-      const order = await this.danaService.createOrder({
+      const order = await this.dokuService.createOrder({
         orderId,
         amount: pkg.price,
-        title: `Paket ${pkg.name}`,
         returnUrl: `${frontendUrl}/user/payment?orderId=${encodeURIComponent(orderId)}`,
-        goods: [{ id: pkg.id, name: pkg.name, price: pkg.price, quantity: 1 }],
       });
 
       await this.prisma.payment.update({
         where: { id: payment.id },
         data: {
           transactionId: order.referenceNo,
-          // snapUrl column now stores the DANA checkout URL
+          // snapUrl column now stores the DOKU checkout URL
           snapUrl: order.redirectUrl,
-          paymentType: 'DANA',
+          paymentType: 'QRIS',
         },
       });
 
@@ -159,7 +157,7 @@ export class PaymentService {
         },
       };
     } catch (error) {
-      this.logger.error('Failed to create DANA order', error);
+      this.logger.error('Failed to create DOKU order', error);
 
       await this.prisma.payment.update({
         where: { id: payment.id },
@@ -171,31 +169,22 @@ export class PaymentService {
   }
 
   /**
-   * Handle a DANA finish notification. The signature must already be
-   * verified (see PaymentController). Returns the body DANA expects.
+   * Handle a DOKU notification. The signature must already be
+   * verified (see PaymentController).
    */
-  async handleDanaNotification(notify: FinishNotifyRequest) {
-    await this.applyStatus(notify.originalPartnerReferenceNo, {
-      statusCode: notify.latestTransactionStatus,
-      referenceNo: notify.originalReferenceNo,
-      paidAt: notify.additionalInfo?.paidTime ?? notify.finishedTime,
-      raw: notify,
-    });
-
-    return { responseCode: '2005600', responseMessage: 'Successful' };
+  async handleDokuNotification(notify: DokuTransaction) {
+    const orderId = notify.order?.invoice_number;
+    if (!orderId) {
+      this.logger.warn('DOKU notification without order.invoice_number');
+      return;
+    }
+    await this.applyStatus(orderId, notify);
   }
 
-  /** Update a payment from a DANA status code; activates the subscription once. */
-  private async applyStatus(
-    orderId: string,
-    info: {
-      statusCode?: string;
-      referenceNo?: string;
-      paidAt?: string;
-      raw: unknown;
-    },
-  ) {
-    this.logger.log(`DANA status for order ${orderId}: ${info.statusCode}`);
+  /** Update a payment from a DOKU transaction; activates the subscription once. */
+  private async applyStatus(orderId: string, trx: DokuTransaction) {
+    const { status, date: paidAt } = trx.transaction ?? {};
+    this.logger.log(`DOKU status for order ${orderId}: ${status}`);
 
     const payment = await this.prisma.payment.findUnique({
       where: { orderId },
@@ -206,7 +195,7 @@ export class PaymentService {
       return null;
     }
 
-    const newStatus = DanaService.mapStatus(info.statusCode);
+    const newStatus = DokuService.mapStatus(status);
 
     // Ignore unknown codes, no-ops, and never downgrade a successful payment
     if (!newStatus || newStatus === payment.status || payment.status === 'SUCCESS') {
@@ -219,14 +208,13 @@ export class PaymentService {
       where: { id: payment.id, status: payment.status },
       data: {
         status: newStatus,
-        transactionId: info.referenceNo || payment.transactionId,
         paidAt:
           newStatus === 'SUCCESS'
-            ? info.paidAt && !isNaN(Date.parse(info.paidAt))
-              ? new Date(info.paidAt)
+            ? paidAt && !isNaN(Date.parse(paidAt))
+              ? new Date(paidAt)
               : new Date()
             : null,
-        metadata: JSON.stringify(info.raw),
+        metadata: JSON.stringify(trx),
       },
     });
 
@@ -307,7 +295,7 @@ export class PaymentService {
     };
   }
 
-  // Ask DANA for the latest status and sync it to the database
+  // Ask DOKU for the latest status and sync it to the database
   async checkPaymentStatus(userId: string, orderId: string) {
     const payment = await this.prisma.payment.findUnique({
       where: { orderId },
@@ -318,25 +306,17 @@ export class PaymentService {
     }
 
     try {
-      const status = await this.danaService.queryPayment(orderId);
-
-      const updated = await this.applyStatus(orderId, {
-        statusCode: status.latestTransactionStatus,
-        referenceNo: status.originalReferenceNo,
-        paidAt: status.paidTime,
-        raw: status,
-      });
+      const trx = await this.dokuService.queryPayment(orderId);
+      const updated = trx && (await this.applyStatus(orderId, trx));
 
       return {
         success: true,
         orderId,
         status: updated?.status ?? payment.status,
-        latestTransactionStatus: status.latestTransactionStatus,
-        transactionStatusDesc: status.transactionStatusDesc,
         message: 'Status synced to database',
       };
     } catch (error) {
-      this.logger.error(`Failed to query DANA status for ${orderId}`, error);
+      this.logger.error(`Failed to query DOKU status for ${orderId}`, error);
       throw new BadRequestException('Failed to check payment status');
     }
   }

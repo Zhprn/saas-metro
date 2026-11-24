@@ -22,7 +22,7 @@ process.on('uncaughtException', (err) => {
 
 async function bootstrap() {
   dns.setDefaultResultOrder('ipv4first');
-  // rawBody: DANA webhook signatures are computed over the exact request body
+  // rawBody: DOKU webhook signatures are computed over the exact request body
   const app = await NestFactory.create(AppModule, { rawBody: true });
   app.enableCors({
     origin: '*',
